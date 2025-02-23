@@ -101,3 +101,117 @@
     (<= amount (var-get max-bet-amount))
   )
 )
+
+;; Public Functions
+
+;; Create a new market with enhanced validation
+(define-public (create-market (description (string-ascii 256)) (close-block uint))
+  (let
+    (
+      (market-id (var-get next-market-id))
+      (expiry-block (+ close-block (var-get expiry-period)))
+    )
+    ;; Enhanced input validation
+    (asserts! (is-valid-string-length description) ERR-INVALID-PARAMETER)
+    (asserts! (is-valid-close-block close-block) ERR-INVALID-CLOSE-BLOCK)
+    (asserts! (is-valid-expiry-block close-block expiry-block) ERR-INVALID-PARAMETER)
+
+    (map-set markets
+      { market-id: market-id }
+      {
+        description: description,
+        outcome: none,
+        close-block: close-block,
+        expiry-block: expiry-block,
+        creator: tx-sender
+      }
+    )
+    (var-set next-market-id (+ market-id u1))
+    (ok market-id)
+  )
+)
+
+;; Place a bet on a market with enhanced validation
+(define-public (place-bet (market-id uint) (prediction bool) (amount uint))
+  (let
+    (
+      (existing-bet (default-to { amount: u0, prediction: false } 
+                      (map-get? bets { market-id: market-id, user: tx-sender })))
+    )
+    ;; Enhanced input validation
+    (asserts! (is-valid-market-id market-id) ERR-MARKET-NOT-FOUND)
+    (asserts! (is-valid-bet-amount amount) ERR-INVALID-BET)
+    (let
+      (
+        (market (unwrap! (map-get? markets { market-id: market-id }) ERR-MARKET-NOT-FOUND))
+        (total-bet-amount (+ amount (get amount existing-bet)))
+      )
+      ;; Additional validation for combined bet amount
+      (asserts! (<= total-bet-amount (var-get max-bet-amount)) ERR-BET-TOO-HIGH)
+      (asserts! (< block-height (get close-block market)) ERR-MARKET-CLOSED)
+      (asserts! (is-none (get outcome market)) ERR-MARKET-ALREADY-RESOLVED)
+      (asserts! (>= (stx-get-balance tx-sender) amount) ERR-INSUFFICIENT-FUNDS)
+
+      (map-set bets
+        { market-id: market-id, user: tx-sender }
+        { amount: total-bet-amount, prediction: prediction }
+      )
+      (stx-transfer? amount tx-sender (as-contract tx-sender))
+    )
+  )
+)
+
+;; The rest of the contract remains the same...
+;; [Previous functions: resolve-market, claim-winnings, refund-expired-bet, cleanup-expired-market]
+
+;; Enhanced setter for expiry period with stricter validation
+(define-public (set-expiry-period (new-period uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
+    (asserts! (and 
+      (>= new-period u1000)  ;; Minimum ~1 day worth of blocks
+      (<= new-period u52560) ;; Maximum ~1 year worth of blocks
+    ) ERR-INVALID-PARAMETER)
+    (ok (var-set expiry-period new-period))
+  )
+)
+
+;; Enhanced setter for minimum bet amount with stricter validation
+(define-public (set-min-bet-amount (new-amount uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
+    (asserts! (and 
+      (>= new-amount u1)
+      (< new-amount (var-get max-bet-amount))
+      (<= new-amount u1000000) ;; Upper limit for minimum bet
+    ) ERR-INVALID-PARAMETER)
+    (ok (var-set min-bet-amount new-amount))
+  )
+)
+
+;; Enhanced setter for maximum bet amount with stricter validation
+(define-public (set-max-bet-amount (new-amount uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
+    (asserts! (and 
+      (> new-amount (var-get min-bet-amount))
+      (<= new-amount u1000000000000)
+      (>= new-amount u1000) ;; Lower limit for maximum bet
+    ) ERR-INVALID-PARAMETER)
+    (ok (var-set max-bet-amount new-amount))
+  )
+)
+
+;; Getter for contract owner
+(define-read-only (get-contract-owner)
+  (ok (var-get contract-owner))
+)
+
+;; Function to transfer contract ownership
+(define-public (transfer-ownership (new-owner principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-UNAUTHORIZED)
+    (asserts! (not (is-eq new-owner (var-get contract-owner))) ERR-INVALID-PARAMETER)
+    (ok (var-set contract-owner new-owner))
+  )
+)
